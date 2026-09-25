@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Buildify Template — User Panel</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,Arial,sans-serif;background:#0b1220;color:#e5e7eb}
+    .wrap{width:min(940px,100%);margin:auto;padding:18px}
+    .hero{padding:22px 4px 12px}
+    .hero h1{margin:0;font-size:28px}
+    .hero p{margin:7px 0 0;color:#94a3b8}
+    .card{background:#111827;border:1px solid #263244;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 12px 32px rgba(0,0,0,.22)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    @media(max-width:720px){.grid{grid-template-columns:1fr}}
+    h2,h3{margin:0 0 10px}
+    input,textarea,button{width:100%;font:inherit;border-radius:12px;border:1px solid #344155;padding:12px;margin-top:9px}
+    input,textarea{background:#0b1220;color:#f8fafc;outline:none}
+    input:focus,textarea:focus{border-color:#60a5fa}
+    textarea{min-height:130px;resize:vertical}
+    button{border:0;background:#2563eb;color:#fff;font-weight:700;cursor:pointer}
+    button.secondary{background:#334155}
+    button.danger{background:#dc2626}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .hidden{display:none!important}
+    .muted{color:#94a3b8}
+    .ok{color:#4ade80}
+    .err{color:#f87171}
+    .status{padding:12px;border-radius:12px;background:#0b1220;line-height:1.8;word-break:break-word}
+    .notif{border:1px solid #2d3a4d;border-radius:15px;padding:14px;background:#0b1220}
+    .notif img{display:block;width:100%;max-height:460px;object-fit:cover;border-radius:12px;margin-top:12px}
+    .row{display:flex;gap:10px}.row>*{flex:1}
+    @media(max-width:520px){.row{flex-direction:column;gap:0}}
+    .topline{display:flex;justify-content:space-between;align-items:center;gap:10px}
+    .smallbtn{width:auto;padding:9px 12px;margin:0}
+    .pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#1e293b;color:#cbd5e1;font-size:12px}
+    .footer{padding:18px 4px 6px;color:#64748b;font-size:12px;text-align:center}
+    a{color:#93c5fd}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hero">
+    <h1>Buildify Template</h1>
+    <p>User Control Panel · notifications & APK updates</p>
+  </div>
+
+  <section id="loginCard" class="card">
+    <h2>Login</h2>
+    <div class="muted">Enter the same secret code that is configured in <code>AppConfig.java</code>.</div>
+    <input id="secretCode" type="password" autocomplete="off" placeholder="Secret code / password">
+    <button id="loginBtn" onclick="login()">Login</button>
+    <div id="loginMsg" class="muted" style="margin-top:10px"></div>
+  </section>
+
+  <section id="panel" class="hidden">
+    <div class="card">
+      <div class="topline">
+        <div>
+          <h2>Connected App</h2>
+          <span class="pill" id="packagePill">com.buildify.template</span>
+        </div>
+        <button class="secondary smallbtn" onclick="logout()">Logout</button>
+      </div>
+      <div id="status" class="status" style="margin-top:12px"></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Push Notification</h2>
+        <div class="muted">The Android app polls the server. A new notification is shown inside the app and as an Android notification.</div>
+        <input id="nTitle" maxlength="120" placeholder="Title">
+        <textarea id="nMessage" maxlength="5000" placeholder="Message"></textarea>
+        <input id="nImage" maxlength="2048" placeholder="Image URL (https://...)" oninput="previewImage()">
+        <div id="imgPreviewBox" class="hidden" style="margin-top:10px">
+          <div class="muted">Image preview</div>
+          <img id="imgPreview" alt="Preview" style="width:100%;max-height:260px;object-fit:cover;border-radius:12px;margin-top:7px">
+        </div>
+        <button onclick="publishNotification()">Publish Notification</button>
+        <button class="danger" onclick="clearNotification()">Remove Notification</button>
+        <div id="nMsg" style="margin-top:10px"></div>
+      </div>
+
+      <div class="card">
+        <h2>Update APK</h2>
+        <div class="muted">Version code must be higher than the currently installed app version.</div>
+        <div class="row">
+          <input id="vCode" type="number" min="1" placeholder="Version code">
+          <input id="vName" placeholder="Version name, e.g. 2.0.0">
+        </div>
+        <input id="apkUrl" maxlength="2048" placeholder="Direct APK URL (https://...)" oninput="checkApkUrl()">
+        <textarea id="uMessage" maxlength="5000" placeholder="Update message"></textarea>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <input id="mandatory" type="checkbox" checked style="width:auto;margin:0">
+          Mandatory update
+        </label>
+        <button onclick="publishUpdate()">Publish Update</button>
+        <button class="danger" onclick="clearUpdate()">Remove Update</button>
+        <div id="apkMsg" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="topline"><h2>Current Notification</h2><span id="refreshState" class="muted">Auto refresh: 10s</span></div>
+      <div id="notificationView" class="muted" style="margin-top:10px">No notification.</div>
+    </div>
+
+    <div class="card">
+      <h2>Current Update</h2>
+      <div id="updateView" class="muted" style="margin-top:10px">No update.</div>
+    </div>
+  </section>
+
+  <div class="footer">Buildify Template · Package: com.buildify.template</div>
+</div>
+
+<script>
+let secretCode = "";
+let currentApp = null;
+let timer = null;
+
+function esc(value){
+  return String(value ?? "").replace(/[&<>"']/g, function(ch){
+    return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[ch];
+  });
+}
+function setMsg(id,text,good){
+  const e=document.getElementById(id);
+  e.textContent=text||"";
+  e.className=good?"ok":"err";
+}
+function show(id){document.getElementById(id).classList.remove("hidden")}
+function hide(id){document.getElementById(id).classList.add("hidden")}
+
+async function callApi(path, body){
+  const response = await fetch(path, {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)
+  });
+  const data = await response.json().catch(()=>({ok:false,error:"Invalid server response"}));
+  if(!response.ok || !data.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+async function login(){
+  const code=document.getElementById("secretCode").value.trim();
+  if(code.length<12){setMsg("loginMsg","Secret code must be at least 12 characters.",false);return}
+  document.getElementById("loginBtn").disabled=true;
+  setMsg("loginMsg","Checking...",true);
+  try{
+    const data=await callApi("/api/user/login",{secretCode:code});
+    secretCode=code;
+    currentApp=data.app;
+    hide("loginCard");
+    show("panel");
+    render(currentApp);
+    startRefresh();
+  }catch(error){
+    setMsg("loginMsg",error.message,false);
+  }finally{
+    document.getElementById("loginBtn").disabled=false;
+  }
+}
+
+function logout(){
+  secretCode=""; currentApp=null;
+  stopRefresh();
+  document.getElementById("secretCode").value="";
+  hide("panel"); show("loginCard");
+  document.getElementById("loginMsg").textContent="";
+}
+
+function startRefresh(){
+  stopRefresh();
+  timer=setInterval(refreshState,10000);
+}
+function stopRefresh(){if(timer){clearInterval(timer);timer=null}}
+async function refreshState(){
+  if(!secretCode)return;
+  try{
+    const data=await callApi("/api/user/login",{secretCode:secretCode});
+    currentApp=data.app; render(currentApp);
+  }catch(error){
+    document.getElementById("refreshState").textContent="Refresh error";
+  }
+}
+
+function render(app){
+  document.getElementById("packagePill").textContent=app.packageName||"";
+  document.getElementById("status").innerHTML=
+    "<b>App:</b> "+esc(app.appName||"")+"<br>"+
+    "<b>Package:</b> "+esc(app.packageName||"")+"<br>"+
+    "<b>Current Version:</b> "+esc(app.versionName||"")+" ("+esc(app.versionCode||"")+")";
+
+  const n=app.notification;
+  if(n){
+    document.getElementById("notificationView").innerHTML=
+      "<div class='notif'><h3>"+esc(n.title)+"</h3><div>"+esc(n.message).replace(/\n/g,"<br>")+"</div>"+
+      (n.imageUrl?"<img src='"+esc(n.imageUrl)+"' alt='Notification image'>":"")+
+      "<div class='muted' style='margin-top:8px'>Published: "+esc(new Date(n.createdAt||Date.now()).toLocaleString())+"</div></div>";
+  }else{
+    document.getElementById("notificationView").innerHTML="<span class='muted'>No active notification.</span>";
+  }
+
+  const u=app.update;
+  if(u){
+    document.getElementById("updateView").innerHTML=
+      "<div class='status'><b>Version:</b> "+esc(u.versionName)+" ("+esc(u.versionCode)+")<br>"+
+      "<b>Mandatory:</b> "+(u.mandatory?"Yes":"No")+"<br>"+
+      "<b>Message:</b> "+esc(u.message)+"<br>"+
+      "<b>APK:</b> <a href='"+esc(u.apkUrl)+"' target='_blank' rel='noopener'>Open APK URL</a></div>";
+  }else{
+    document.getElementById("updateView").innerHTML="<span class='muted'>No update published.</span>";
+  }
+  document.getElementById("refreshState").textContent="Auto refresh: 10s · last sync now";
+
+  if(!document.getElementById("vCode").value && app.versionCode){
+    document.getElementById("vCode").value=Number(app.versionCode)+1;
+  }
+  if(!document.getElementById("vName").value && app.versionName){
+    document.getElementById("vName").value=app.versionName;
+  }
+}
+
+function previewImage(){
+  const url=document.getElementById("nImage").value.trim();
+  const box=document.getElementById("imgPreviewBox");
+  const img=document.getElementById("imgPreview");
+  if(!url){box.classList.add("hidden");img.removeAttribute("src");return}
+  img.src=url; box.classList.remove("hidden");
+  img.onerror=function(){box.classList.add("hidden")};
+}
+function checkApkUrl(){
+  // Kept intentionally simple: final validation is performed by the server.
+}
+
+async function publishNotification(){
+  try{
+    const data=await callApi("/api/admin/notification",{
+      secretCode:secretCode,
+      title:document.getElementById("nTitle").value,
+      message:document.getElementById("nMessage").value,
+      imageUrl:document.getElementById("nImage").value
+    });
+    setMsg("nMsg","Notification published successfully.",true);
+    document.getElementById("nTitle").value="";
+    document.getElementById("nMessage").value="";
+    document.getElementById("nImage").value="";
+    document.getElementById("imgPreviewBox").classList.add("hidden");
+    await refreshState();
+  }catch(error){setMsg("nMsg",error.message,false)}
+}
+
+async function clearNotification(){
+  try{
+    await callApi("/api/admin/clear-notification",{secretCode:secretCode});
+    setMsg("nMsg","Notification removed.",true);
+    await refreshState();
+  }catch(error){setMsg("nMsg",error.message,false)}
+}
+
+async function publishUpdate(){
+  const code=Number(document.getElementById("vCode").value);
+  if(!Number.isInteger(code)||code<1){setMsg("apkMsg","Enter a valid version code.",false);return}
+  try{
+    await callApi("/api/admin/update",{
+      secretCode:secretCode,
+      versionCode:code,
+      versionName:document.getElementById("vName").value,
+      apkUrl:document.getElementById("apkUrl").value,
+      message:document.getElementById("uMessage").value,
+      mandatory:document.getElementById("mandatory").checked
+    });
+    setMsg("apkMsg","Update published successfully.",true);
+    await refreshState();
+  }catch(error){setMsg("apkMsg",error.message,false)}
+}
+
+async function clearUpdate(){
+  try{
+    await callApi("/api/admin/clear-update",{secretCode:secretCode});
+    setMsg("apkMsg","Update removed.",true);
+    await refreshState();
+  }catch(error){setMsg("apkMsg",error.message,false)}
+}
+
+document.getElementById("secretCode").addEventListener("keydown",function(event){
+  if(event.key==="Enter")login();
+});
+</script>
+</body>
+</html>
