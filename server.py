@@ -23,19 +23,110 @@ MAX_URL = 2048
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_FILE = os.path.join(BASE_DIR, "index.html")
 
-# Recommended: set these as hosting environment variables.
+# Render/hosting configuration. Never hard-code credentials here.
 FIREBASE_DATABASE_URL = os.environ.get("FIREBASE_DATABASE_URL", "").strip()
 FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
-SERVICE_ACCOUNT_FILE = os.environ.get(
-    "GOOGLE_APPLICATION_CREDENTIALS",
+FIREBASE_SERVICE_ACCOUNT_FILE = os.environ.get("FIREBASE_SERVICE_ACCOUNT_FILE", "").strip()
+GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+
+# Existing filenames are supported so the rest of the project can stay unchanged.
+BUNDLED_SERVICE_ACCOUNT_FILES = (
+    os.path.join(BASE_DIR, "firebase-service-account.json"),
     os.path.join(BASE_DIR, "serviceAccountKey.json"),
-).strip()
+)
 
 app = Flask(__name__)
 
 
+def _friendly_firebase_error(exc):
+    """Turn the common Google JWT failure into a useful hosting error."""
+    message = str(exc)
+    lowered = message.lower()
+    if "invalid_grant" in lowered and "invalid jwt signature" in lowered:
+        return (
+            "Firebase service-account authentication failed: Invalid JWT Signature. "
+            "The Render credential is invalid, revoked, expired, or does not match "
+            "its service-account private key. APP_SECRET_CODE is unrelated to this "
+            "credential. Generate a fresh Firebase service-account private key and "
+            "set the complete JSON in FIREBASE_CREDENTIALS_JSON."
+        )
+    return message
+
+
+def _load_service_account_json(raw_value):
+    """Parse a service-account JSON value, including double-encoded JSON from env vars."""
+    text = (raw_value or "").strip()
+    if not text:
+        raise ValueError("Empty service-account JSON")
+
+    data = json.loads(text)
+    if isinstance(data, str):
+        data = json.loads(data)
+
+    if not isinstance(data, dict):
+        raise ValueError("Service-account JSON must be an object")
+
+    if data.get("type") != "service_account":
+        raise ValueError("Credential JSON is not a service-account key")
+    if not data.get("client_email"):
+        raise ValueError("Service-account JSON is missing client_email")
+    if not data.get("private_key"):
+        raise ValueError("Service-account JSON is missing private_key")
+
+    # Handles values copied into Render with literal \n sequences.
+    data["private_key"] = str(data["private_key"]).replace("\\n", "\n")
+    return credentials.Certificate(data)
+
+
+def _credential_candidates():
+    """Return credential sources in safe, predictable priority order."""
+    candidates = []
+
+    if FIREBASE_CREDENTIALS_JSON:
+        candidates.append((
+            "FIREBASE_CREDENTIALS_JSON",
+            lambda: _load_service_account_json(FIREBASE_CREDENTIALS_JSON),
+        ))
+
+    for path in (FIREBASE_SERVICE_ACCOUNT_FILE, GOOGLE_APPLICATION_CREDENTIALS):
+        if path and os.path.isfile(path):
+            candidates.append((
+                "credential file: " + path,
+                lambda path=path: credentials.Certificate(path),
+            ))
+
+    for path in BUNDLED_SERVICE_ACCOUNT_FILES:
+        if os.path.isfile(path) and path not in (
+            FIREBASE_SERVICE_ACCOUNT_FILE,
+            GOOGLE_APPLICATION_CREDENTIALS,
+        ):
+            candidates.append((
+                "bundled credential file: " + os.path.basename(path),
+                lambda path=path: credentials.Certificate(path),
+            ))
+
+    # Google-managed hosts may provide Application Default Credentials.
+    candidates.append(("Application Default Credentials", credentials.ApplicationDefault))
+    return candidates
+
+
+def _discard_initialized_firebase_app():
+    """Remove a failed Firebase app so the next credential source can be tried."""
+    if not firebase_admin._apps:
+        return
+    try:
+        firebase_admin.delete_app(firebase_admin.get_app())
+    except Exception:
+        pass
+
+
+def _validate_firebase_connection():
+    """Make one minimal authenticated read so bad JWT credentials fail at startup."""
+    db.reference("apps").order_by_key().limit_to_first(1).get()
+
+
 def initialize_firebase():
-    """Initialize Firebase Admin SDK once."""
+    """Initialize Firebase Admin SDK and validate the selected credentials."""
     if firebase_admin._apps:
         return
 
@@ -45,33 +136,23 @@ def initialize_firebase():
             "https://your-project-default-rtdb.firebaseio.com"
         )
 
-    cred = None
-
-    # Hosting-friendly option: the full service-account JSON in an env var.
-    if FIREBASE_CREDENTIALS_JSON:
+    errors = []
+    for source_name, factory in _credential_candidates():
         try:
-            service_account = json.loads(FIREBASE_CREDENTIALS_JSON)
-            cred = credentials.Certificate(service_account)
+            cred = factory()
+            firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
+            _validate_firebase_connection()
+            return
         except Exception as exc:
-            raise RuntimeError(
-                "FIREBASE_CREDENTIALS_JSON is not valid service-account JSON: %s" % exc
-            )
+            errors.append("%s -> %s" % (source_name, _friendly_firebase_error(exc)))
+            _discard_initialized_firebase_app()
 
-    # Local / simple hosting option: serviceAccountKey.json next to server.py.
-    elif os.path.isfile(SERVICE_ACCOUNT_FILE):
-        cred = credentials.Certificate(SERVICE_ACCOUNT_FILE)
-
-    # Google-managed environments can use ADC.
-    else:
-        try:
-            cred = credentials.ApplicationDefault()
-        except Exception as exc:
-            raise RuntimeError(
-                "Firebase credentials not found. Set FIREBASE_CREDENTIALS_JSON or "
-                "GOOGLE_APPLICATION_CREDENTIALS. Details: %s" % exc
-            )
-
-    firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
+    if errors:
+        raise RuntimeError(
+            "Firebase credentials could not be authenticated. "
+            + " | ".join(errors)
+        )
+    raise RuntimeError("Firebase credentials not found.")
 
 
 try:
@@ -80,7 +161,7 @@ try:
     FIREBASE_ERROR = ""
 except Exception as exc:
     FIREBASE_READY = False
-    FIREBASE_ERROR = str(exc)
+    FIREBASE_ERROR = _friendly_firebase_error(exc)
 
 
 def now_ms():
@@ -173,6 +254,7 @@ def health():
             "firebaseConfigured": FIREBASE_READY,
             "app": APP_NAME,
             "packageName": PACKAGE_NAME,
+            "credentialStatus": "authenticated" if FIREBASE_READY else "not authenticated",
             "error": FIREBASE_ERROR if not FIREBASE_READY else None,
         }
     )
