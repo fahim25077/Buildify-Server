@@ -4,6 +4,7 @@ import os
 import re
 import time
 import uuid
+import base64
 from urllib.parse import urlparse
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -26,14 +27,9 @@ INDEX_FILE = os.path.join(BASE_DIR, "index.html")
 # Render/hosting configuration. Never hard-code credentials here.
 FIREBASE_DATABASE_URL = os.environ.get("FIREBASE_DATABASE_URL", "").strip()
 FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
+FIREBASE_CREDENTIALS_B64 = os.environ.get("FIREBASE_CREDENTIALS_B64", "").strip()
 FIREBASE_SERVICE_ACCOUNT_FILE = os.environ.get("FIREBASE_SERVICE_ACCOUNT_FILE", "").strip()
 GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-
-# Existing filenames are supported so the rest of the project can stay unchanged.
-BUNDLED_SERVICE_ACCOUNT_FILES = (
-    os.path.join(BASE_DIR, "firebase-service-account.json"),
-    os.path.join(BASE_DIR, "serviceAccountKey.json"),
-)
 
 app = Flask(__name__)
 
@@ -45,20 +41,23 @@ def _friendly_firebase_error(exc):
     if "invalid_grant" in lowered and "invalid jwt signature" in lowered:
         return (
             "Firebase service-account authentication failed: Invalid JWT Signature. "
-            "The Render credential is invalid, revoked, expired, or does not match "
-            "its service-account private key. APP_SECRET_CODE is unrelated to this "
-            "credential. Generate a fresh Firebase service-account private key and "
-            "set the complete JSON in FIREBASE_CREDENTIALS_JSON."
+            "The private key being used by Render is not accepted for that service "
+            "account. This usually means the key is revoked/disabled, the JSON key "
+            "does not match its registered key, or the wrong credential was supplied. "
+            "APP_SECRET_CODE is unrelated to Firebase service-account authentication. "
+            "Create a new private key in Firebase Console > Project settings > Service accounts "
+            "and replace the entire FIREBASE_CREDENTIALS_JSON secret."
         )
     return message
 
 
 def _load_service_account_json(raw_value):
-    """Parse a service-account JSON value, including double-encoded JSON from env vars."""
-    text = (raw_value or "").strip()
+    """Parse a service-account JSON value, including escaped and base64 values."""
+    text = (raw_value or "").strip().lstrip("\ufeff")
     if not text:
         raise ValueError("Empty service-account JSON")
 
+    # Some hosting dashboards preserve JSON as a quoted/double-encoded string.
     data = json.loads(text)
     if isinstance(data, str):
         data = json.loads(data)
@@ -66,20 +65,42 @@ def _load_service_account_json(raw_value):
     if not isinstance(data, dict):
         raise ValueError("Service-account JSON must be an object")
 
+    required = ("type", "project_id", "private_key", "client_email", "token_uri")
+    missing = [name for name in required if not data.get(name)]
+    if missing:
+        raise ValueError("Service-account JSON is missing: " + ", ".join(missing))
+
     if data.get("type") != "service_account":
         raise ValueError("Credential JSON is not a service-account key")
-    if not data.get("client_email"):
-        raise ValueError("Service-account JSON is missing client_email")
-    if not data.get("private_key"):
-        raise ValueError("Service-account JSON is missing private_key")
 
-    # Handles values copied into Render with literal \n sequences.
-    data["private_key"] = str(data["private_key"]).replace("\\n", "\n")
+    # Render/env values may contain literal backslash-n characters.
+    key = str(data["private_key"]).replace("\\n", "\n").strip()
+    if not key.startswith("-----BEGIN PRIVATE KEY-----") or not key.endswith("-----END PRIVATE KEY-----"):
+        raise ValueError("private_key is not a valid PEM private key")
+    data["private_key"] = key
+
     return credentials.Certificate(data)
 
 
+def _load_service_account_base64(raw_value):
+    """Decode a base64-encoded service-account JSON value."""
+    text = (raw_value or "").strip()
+    if not text:
+        raise ValueError("Empty FIREBASE_CREDENTIALS_B64")
+    try:
+        raw = base64.b64decode(text, validate=True).decode("utf-8")
+    except Exception as exc:
+        raise ValueError("FIREBASE_CREDENTIALS_B64 is not valid base64: %s" % exc)
+    return _load_service_account_json(raw)
+
+
 def _credential_candidates():
-    """Return credential sources in safe, predictable priority order."""
+    """Return credential sources in safe, predictable priority order.
+
+    Render should provide FIREBASE_CREDENTIALS_JSON (or B64). Local/bundled
+    private-key files are intentionally not used as a fallback because a stale
+    checked-in key can be revoked or replaced independently of the project.
+    """
     candidates = []
 
     if FIREBASE_CREDENTIALS_JSON:
@@ -88,20 +109,16 @@ def _credential_candidates():
             lambda: _load_service_account_json(FIREBASE_CREDENTIALS_JSON),
         ))
 
+    if FIREBASE_CREDENTIALS_B64:
+        candidates.append((
+            "FIREBASE_CREDENTIALS_B64",
+            lambda: _load_service_account_base64(FIREBASE_CREDENTIALS_B64),
+        ))
+
     for path in (FIREBASE_SERVICE_ACCOUNT_FILE, GOOGLE_APPLICATION_CREDENTIALS):
         if path and os.path.isfile(path):
             candidates.append((
                 "credential file: " + path,
-                lambda path=path: credentials.Certificate(path),
-            ))
-
-    for path in BUNDLED_SERVICE_ACCOUNT_FILES:
-        if os.path.isfile(path) and path not in (
-            FIREBASE_SERVICE_ACCOUNT_FILE,
-            GOOGLE_APPLICATION_CREDENTIALS,
-        ):
-            candidates.append((
-                "bundled credential file: " + os.path.basename(path),
                 lambda path=path: credentials.Certificate(path),
             ))
 
@@ -255,6 +272,10 @@ def health():
             "app": APP_NAME,
             "packageName": PACKAGE_NAME,
             "credentialStatus": "authenticated" if FIREBASE_READY else "not authenticated",
+            "credentialHint": (
+                "Set FIREBASE_CREDENTIALS_JSON to the complete fresh Firebase service-account JSON."
+                if not FIREBASE_READY else None
+            ),
             "error": FIREBASE_ERROR if not FIREBASE_READY else None,
         }
     )
